@@ -44,6 +44,35 @@ class Synchronizer {
         self.onAccessDenied = onAccessDenied
     }
 
+    // Extract BeaconStore key for macOS Sequoia (15.0+) and Tahoe (26.0+)
+    // Uses kSecAttrService instead of kSecAttrLabel for compatibility
+    @available(macOS 15.0, *)
+    func getSequoiaBeaconKey() -> Data {
+        log("Attempting to extract BeaconStore key using Service attribute (Sequoia/Tahoe method)...")
+        
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: "BeaconStore",
+            kSecMatchLimit as String: kSecMatchLimitOne,
+            kSecReturnData as String: true,
+        ]
+        
+        var item: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &item)
+        
+        if status == errSecSuccess, let keyData = item as? Data {
+            log("Successfully extracted BeaconStore key using Service attribute (\(keyData.count) bytes)")
+            return keyData
+        } else if status == errSecItemNotFound {
+            log("BeaconStore key not found in keychain with Service attribute")
+        } else {
+            let errorMessage = SecCopyErrorMessageString(status, nil) as String? ?? "Unknown error"
+            log("Keychain error (Service): \(status) - \(errorMessage)")
+        }
+        
+        return Data()
+    }
+
     func fetchData() {
         clearLog()
 
@@ -127,8 +156,17 @@ class Synchronizer {
                 }
             }
 
+            // For macOS 15.0+ (Sequoia/Tahoe), try the new Service-based method first
             if keyData.count == 0 {
-                log("Getting Beacon key from keychain...")
+                if #available(macOS 15.0, *) {
+                    log("Trying Service-based keychain method (macOS Sequoia/Tahoe)...")
+                    keyData = getSequoiaBeaconKey()
+                }
+            }
+
+            // Fallback: Try the Label-based method (works on older macOS versions)
+            if keyData.count == 0 {
+                log("Getting Beacon key from keychain (Label method)...")
                 let query: [String: Any] = [
                     kSecClass as String: kSecClassGenericPassword,
                     kSecAttrLabel as String: "BeaconStore",
@@ -142,7 +180,10 @@ class Synchronizer {
                 if status == errSecSuccess, let existingItem = item {
                     if let data = existingItem[kSecValueData as String] as? Data {
                         keyData = Data(data)
+                        log("Successfully got Beacon key using Label attribute")
                     }
+                } else {
+                    log("Label-based keychain query failed with status: \(status)")
                 }
             }
 
@@ -181,8 +222,15 @@ class Synchronizer {
             }
 
             if keyData.count == 0 {
-                log("Error: Cannot get Beacon key data.\nPlease try to run the below command on your Terminal, and save the \"gena\" value (it looks like \"0xABCDEF...7890\" without spaces) to the Extras panel.")
+                log("Error: Cannot get Beacon key data.")
+                log("")
+                log("For macOS Sequoia (15.0+) and Tahoe (26.0+):")
+                log("The BeaconStore key may require special extraction. Please see:")
+                log("https://github.com/pajowu/beaconstorekey-extractor")
+                log("")
+                log("Alternative: Run this command in Terminal and save the 'gena' value to the Extras panel:")
                 log("/usr/bin/security find-generic-password -l BeaconStore -g")
+                log("(Look for a hex string like '0xABCDEF...7890' without spaces)")
             } else {
                 log("Got Beacon key data (\(keyData.count) byte(s))")
 
